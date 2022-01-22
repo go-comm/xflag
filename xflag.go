@@ -39,6 +39,14 @@ func Exec(command string, fn func() error) error {
 	return Commands.Service("exec", fn)
 }
 
+func Output() io.Writer {
+	return Commands.Output()
+}
+
+func SetOutput(output io.Writer) {
+	Commands.SetOutput(output)
+}
+
 var Usage = func() {
 	fmt.Fprintf(Commands.Output(), "Usage of %s:\n", os.Args[0])
 	Commands.Print()
@@ -68,11 +76,15 @@ func (xf *XFlag) Output() io.Writer {
 	return xf.output
 }
 
+func (xf *XFlag) SetOutput(output io.Writer) {
+	xf.output = output
+}
+
 func (xf *XFlag) CommandLine(command string) *flag.FlagSet {
 	if xf.commandLines == nil {
 		xf.commandLines = make(map[string]*flag.FlagSet)
 	}
-	command = fmtCommand(command)
+	command = normailizeCommand(command)
 	fs, ok := xf.commandLines[command]
 	if !ok {
 		fs = flag.NewFlagSet(command, flag.ExitOnError)
@@ -105,7 +117,7 @@ func (xf *XFlag) Service(command string, fn func() error) error {
 	if fn == nil {
 		return nil
 	}
-	command = fmtCommand(command)
+	command = normailizeCommand(command)
 	if _, ok := xf.commandLines[command]; !ok {
 		xf.Usage()
 		return xf.failError(command, errors.New("no command"))
@@ -119,10 +131,12 @@ func (xf *XFlag) failError(command string, err error) error {
 
 func (xf *XFlag) Print() {
 	for _, v := range xf.commandLines {
+		out := v.Output()
+		v.SetOutput(xf.Output())
+		fmt.Fprintf(v.Output(), "Command of %s:\n", v.Name())
 		v.PrintDefaults()
+		v.SetOutput(out)
 	}
 }
 
-func fmtCommand(command string) string {
-	return strings.ToLower(command)
-}
+var normailizeCommand func(s string) string = strings.ToLower
