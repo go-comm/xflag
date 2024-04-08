@@ -1,7 +1,6 @@
 package xflag
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -9,134 +8,176 @@ import (
 	"strings"
 )
 
-var Commands = NewXFlag(os.Args[0])
+var defaultCommandSet = NewCommandSet()
 
-func Parse() {
-	Commands.Parse(os.Args[1:])
-}
+var (
+	commandRunName  = "run"
+	commandExecName = "exec"
+	commandHelpName = "help"
+)
 
-func CommandLine(command string) *flag.FlagSet {
-	return Commands.CommandLine(command)
-}
-
-func CommandLineRun() *flag.FlagSet {
-	return Commands.CommandLine("run")
-}
-
-func CommandLineExec() *flag.FlagSet {
-	return Commands.CommandLine("exec")
-}
-
-func Service(command string, fn func() error) error {
-	return Commands.Service(command, fn)
-}
-
-func Run(command string, fn func() error) error {
-	return Commands.Service("run", fn)
-}
-
-func Exec(command string, fn func() error) error {
-	return Commands.Service("exec", fn)
-}
-
-func Output() io.Writer {
-	return Commands.Output()
-}
-
-func SetOutput(output io.Writer) {
-	Commands.SetOutput(output)
-}
-
-var Usage = func() {
-	fmt.Fprintf(Commands.Output(), "Usage of %s:\n", os.Args[0])
-	Commands.Print()
-}
-
-func NewXFlag(name string) *XFlag {
-	xf := &XFlag{
-		name: name,
+func NewCommandSet() *CommandSet {
+	m := &CommandSet{
+		commands: make(map[string]*flag.FlagSet),
 	}
-	return xf
+	m.Init()
+	return m
 }
 
-type XFlag struct {
-	name         string
-	commandLines map[string]*flag.FlagSet
-	args         []string
+type CommandSet struct {
+	commands     map[string]*flag.FlagSet
 	parsed       bool
+	args         []string
+	commandName  string
+	flagAppName  string
+	flagHttpPort string
+	output       io.Writer
+	terminal     bool
 
-	Usage  func()
-	output io.Writer
+	Help func() error
 }
 
-func (xf *XFlag) Output() io.Writer {
-	if xf.output == nil {
+func (m *CommandSet) Init() {
+
+	m.CommandLine(commandRunName).StringVar(&m.flagAppName, "app-name", "", "")
+	m.CommandLine(commandRunName).StringVar(&m.flagHttpPort, "http-port", "", "")
+	m.CommandLine(commandExecName).StringVar(&m.flagAppName, "app-name", "", "")
+	m.CommandLine(commandExecName).StringVar(&m.flagHttpPort, "http-port", "", "")
+	m.CommandLine(commandHelpName)
+
+	m.Help = func() error { return printHelp(m.Output(), false) }
+}
+
+func (m *CommandSet) Args() []string {
+	return m.args
+}
+
+func (m *CommandSet) Parse(args []string) bool {
+	if m.parsed {
+		return m.parsed
+	}
+	m.args = args
+	if len(args) < 2 {
+		return m.parsed
+	}
+	fs, ok := m.commands[args[1]]
+	if !ok {
+		return m.parsed
+	}
+	if err := fs.Parse(args[2:]); err != nil {
+		return m.parsed
+	}
+	m.parsed = true
+	m.commandName = args[1]
+	return m.parsed
+}
+
+func (m *CommandSet) Parsed() bool {
+	return m.parsed
+}
+
+func (m *CommandSet) SetOutput(output io.Writer) {
+	m.output = output
+}
+
+func (m *CommandSet) Output() io.Writer {
+	if m.output == nil {
 		return os.Stderr
 	}
-	return xf.output
+	return m.output
 }
 
-func (xf *XFlag) SetOutput(output io.Writer) {
-	xf.output = output
+func (m *CommandSet) CommandName() string {
+	return m.commandName
 }
 
-func (xf *XFlag) CommandLine(command string) *flag.FlagSet {
-	if xf.commandLines == nil {
-		xf.commandLines = make(map[string]*flag.FlagSet)
-	}
-	command = normailizeCommand(command)
-	fs, ok := xf.commandLines[command]
+func (m *CommandSet) CommandLine(command string) *flag.FlagSet {
+	fs, ok := m.commands[command]
 	if !ok {
 		fs = flag.NewFlagSet(command, flag.ExitOnError)
-		fs.SetOutput(xf.Output())
-		xf.commandLines[command] = fs
+		fs.SetOutput(m.Output())
+		m.commands[command] = fs
 	}
 	return fs
 }
 
-func (xf *XFlag) Parse(args []string) error {
-	xf.parsed = true
-	if len(args) <= 1 {
-		xf.Usage()
-		return errors.New("xflag: args length got <1, want >1")
-	}
-	xf.args = args
-	fs, ok := xf.commandLines[args[0]]
-	if !ok {
-		xf.Usage()
+func (m *CommandSet) Service(command string, f func() error) error {
+	if m.terminal {
 		return nil
 	}
-	err := fs.Parse(args[1:])
-	if err != nil {
-		return xf.failError(args[1], err)
+	if !m.Parse(m.Args()) {
+		printHelp(m.Output(), true)
+		return nil
+	}
+	if f == nil {
+		return nil
+	}
+
+	switch m.CommandName() {
+	case "help":
+		m.terminal = true
+		return m.Help()
+	}
+
+	if !strings.EqualFold(command, m.CommandName()) {
+		return nil
+	}
+	return f()
+}
+
+func (m *CommandSet) AppName() string {
+	return m.flagAppName
+}
+
+func (m *CommandSet) HttpPort() string {
+	return m.flagHttpPort
+}
+
+func printHelp(output io.Writer, exitOnError bool) error {
+	s := `
+	app run
+	app exec
+	app help`
+	fmt.Fprintln(output, s)
+	if exitOnError {
+		os.Exit(2)
 	}
 	return nil
 }
 
-func (xf *XFlag) Service(command string, fn func() error) error {
-	if fn == nil {
-		return nil
-	}
-	command = normailizeCommand(command)
-	if _, ok := xf.commandLines[command]; !ok {
-		xf.Usage()
-		return xf.failError(command, errors.New("no command"))
-	}
-	return fn()
+func Parse() bool {
+	return defaultCommandSet.Parse(os.Args)
 }
 
-func (xf *XFlag) failError(command string, err error) error {
-	return fmt.Errorf("xflag: command '%s', %w", command, err)
+func Parsed() bool {
+	return defaultCommandSet.Parsed()
 }
 
-func (xf *XFlag) Print() {
-	for _, v := range xf.commandLines {
-		out := v.Output()
-		v.SetOutput(xf.Output())
-		fmt.Fprintf(v.Output(), "Command of %s:\n", v.Name())
-		v.PrintDefaults()
-		v.SetOutput(out)
-	}
+func CommandLine(command string) *flag.FlagSet {
+	return defaultCommandSet.CommandLine(command)
 }
 
-var normailizeCommand func(s string) string = strings.ToLower
+func Service(command string, f func() error) error {
+	Parse()
+	return defaultCommandSet.Service(command, f)
+}
+
+func SetOutput(output io.Writer) {
+	defaultCommandSet.SetOutput(output)
+}
+
+func Output() io.Writer {
+	return defaultCommandSet.Output()
+}
+
+func AppName() string {
+	return defaultCommandSet.AppName()
+}
+
+func HttpPort() string {
+	return defaultCommandSet.HttpPort()
+}
+
+func Help() error {
+	return defaultCommandSet.Help()
+}
